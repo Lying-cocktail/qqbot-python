@@ -1,7 +1,7 @@
 # qqbot-python
 腾讯QQ的openclaw专用机器人协议的PYTHON实现，让机器人更自由吧
 
-### 本项目是从[qqbot|https://github.com/sliverp/qqbot]进行通讯协议转换而来，感谢sliverp提供的版本
+### 本项目是从[qqbot](https://github.com/sliverp/qqbot)进行通讯协议转换而来，感谢sliverp提供的版本
 
 
 ## QQBot Python 客户端
@@ -25,7 +25,7 @@
 - ✅ **聊天记录**：每个联系人独立记录，支持双向消息
 - ✅ **自动发送**：监控 uploads 目录，自动发送文本文件
 
-## 安装
+## 安装依赖
 
 ```bash
 pip install aiohttp
@@ -41,7 +41,7 @@ python qqbot.py <AppID> <ClientSecret>
 
 ### 方式二：使用内置配置
 
-直接运行，使用代码中的默认配置：
+直接运行，使用代码中``自己``修改的默认账号：
 
 ```bash
 python qqbot.py
@@ -55,9 +55,17 @@ python qqbot.py
 python qqbot.py --test
 ```
 
+### 食用方法
+
+. 通过管道运行本程序，通过标准输入输出进行收发消息
+. 本程序独立运行，定时检查chatlogs目录下的聊天记录文件的修改时间，根据需要在uploads目录下生成文件即可回复客户端
+
+
+
+
 ### 获取 AppID 和 ClientSecret
 
-1. 访问 [QQ 开放平台](https://q.qq.com/)
+1. 访问 [QQ 开放平台](https://q.qq.com/qqbot/openclaw/) 龙虾专用入口
 2. 创建机器人应用
 3. 在应用详情页获取 `AppID` 和 `ClientSecret`
 
