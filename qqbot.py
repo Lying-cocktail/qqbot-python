@@ -1424,6 +1424,9 @@ class QQBot:
 class StdioHandler:
     """标准输入输出处理器"""
     
+    CONTACTS_FILE = "contacts.txt"  # 联系人清单文件
+    CHATLOGS_DIR = "chatlogs"  # 聊天记录目录
+    
     def __init__(
         self,
         bot: 'QQBot',
@@ -1440,9 +1443,121 @@ class StdioHandler:
         self._input_queue: asyncio.Queue = asyncio.Queue()
         self._running = False
         
+        # 联系人管理
+        self._contacts: Dict[str, dict] = {}  # id -> {name, type, last_msg_time}
+        self._recent_target: Optional[str] = None  # 最近联系人目标
+        
         # 确保目录存在
         os.makedirs(download_dir, exist_ok=True)
         os.makedirs(upload_dir, exist_ok=True)
+        os.makedirs(self.CHATLOGS_DIR, exist_ok=True)
+        
+        # 加载联系人
+        self._load_contacts()
+    
+    def _get_chatlog_path(self, contact_id: str) -> str:
+        """获取联系人的聊天记录文件路径"""
+        # 使用联系人ID作为文件名
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in contact_id)
+        return os.path.join(self.CHATLOGS_DIR, f"{safe_id}.txt")
+    
+    def _log_message(self, contact_id: str, direction: str, content: str, attachments: List[str] = None):
+        """记录聊天消息到文件
+        
+        Args:
+            contact_id: 联系人ID
+            direction: 方向 "<<" 收到, ">>" 发送
+            content: 消息内容
+            attachments: 附件路径列表
+        """
+        try:
+            log_path = self._get_chatlog_path(contact_id)
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 转义特殊字符
+            escaped_content = self.escape_content(content)
+            
+            # 构建日志行
+            line = f"{direction} [{timestamp}] {escaped_content}"
+            
+            # 添加附件信息
+            if attachments:
+                for att in attachments:
+                    line += f" [{att}]"
+            
+            # 追加到文件
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+                
+        except Exception as e:
+            logger.error(f"记录聊天失败: {e}")
+    
+    def _load_contacts(self):
+        """从文件加载联系人清单"""
+        if os.path.exists(self.CONTACTS_FILE):
+            try:
+                with open(self.CONTACTS_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        # 格式: id|name|type|last_msg_time
+                        parts = line.split("|")
+                        if len(parts) >= 3:
+                            contact_id = parts[0]
+                            self._contacts[contact_id] = {
+                                "name": parts[1],
+                                "type": parts[2],
+                                "last_msg_time": parts[3] if len(parts) > 3 else ""
+                            }
+                            # 第一个作为最近联系人
+                            if not self._recent_target:
+                                if parts[2] == "c2c":
+                                    self._recent_target = f"c2c:{contact_id}"
+                                elif parts[2] == "group":
+                                    self._recent_target = f"group:{contact_id}"
+                                elif parts[2] == "channel":
+                                    self._recent_target = f"channel:{contact_id}"
+                logger.info(f"已加载 {len(self._contacts)} 个联系人")
+            except Exception as e:
+                logger.error(f"加载联系人失败: {e}")
+    
+    def _save_contacts(self):
+        """保存联系人清单到文件"""
+        try:
+            with open(self.CONTACTS_FILE, "w", encoding="utf-8") as f:
+                f.write("# QQBot 联系人清单\n")
+                f.write("# 格式: id|名称|类型|最后消息时间\n\n")
+                for contact_id, info in self._contacts.items():
+                    f.write(f"{contact_id}|{info['name']}|{info['type']}|{info.get('last_msg_time', '')}\n")
+        except Exception as e:
+            logger.error(f"保存联系人失败: {e}")
+    
+    def _update_contact(self, msg: Message):
+        """更新联系人信息"""
+        if msg.is_private:
+            contact_id = msg.author_id
+            contact_type = "c2c"
+            contact_name = msg.author_name or msg.author_id[:8]
+        elif msg.is_group:
+            contact_id = msg.group_openid or ""
+            contact_type = "group"
+            contact_name = msg.author_name or f"群{contact_id[:8]}"
+        elif msg.is_channel:
+            contact_id = msg.channel_id or ""
+            contact_type = "channel"
+            contact_name = msg.author_name or f"频道{contact_id[:8]}"
+        else:
+            return
+        
+        if contact_id:
+            self._contacts[contact_id] = {
+                "name": contact_name,
+                "type": contact_type,
+                "last_msg_time": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            self._recent_target = f"{contact_type}:{contact_id}"
+            self._save_contacts()
     
     def escape_content(self, text: str) -> str:
         """转义内容中的特殊字符"""
@@ -1577,9 +1692,11 @@ class StdioHandler:
     async def send_message(self, target: str, content: str, media_files: List[str]):
         """发送消息到指定目标"""
         try:
-            # 解析目标
+            # 解析目标并获取联系人ID
+            contact_id = None
             if target.startswith("c2c:"):
                 openid = target[4:]
+                contact_id = openid
                 # 发送文本
                 if content:
                     await self.bot.send_private_message(openid, content)
@@ -1593,17 +1710,17 @@ class StdioHandler:
                         elif media_type == "voice":
                             await self.bot.api.send_voice(openid, voice_path=filepath)
                         elif media_type == "video":
-                            # 视频暂时作为文件发送
                             await self.bot.api.send_file(openid, file_path=filepath)
                         else:
                             await self.bot.api.send_file(openid, file_path=filepath)
                         print(f"[发送成功]", flush=True)
                     except Exception as e:
                         print(f"[发送失败] {e}", flush=True)
-                    await asyncio.sleep(0.5)  # 避免发送太快
+                    await asyncio.sleep(0.5)
                     
             elif target.startswith("group:"):
                 group_openid = target[6:]
+                contact_id = group_openid
                 if content:
                     await self.bot.send_group_message(group_openid, content)
                 for filepath in media_files:
@@ -1625,8 +1742,13 @@ class StdioHandler:
                     
             elif target.startswith("channel:"):
                 channel_id = target[8:]
+                contact_id = channel_id
                 if content:
                     await self.bot.send_channel_message(channel_id, content)
+            
+            # 记录发送的消息
+            if contact_id:
+                self._log_message(contact_id, ">>", content, media_files)
                     
         except Exception as e:
             print(f"[发送失败] {e}", flush=True)
@@ -1639,10 +1761,27 @@ class StdioHandler:
         # 设置当前回复目标
         if msg.is_private:
             self._current_target = f"c2c:{msg.author_id}"
+            contact_id = msg.author_id
         elif msg.is_group:
             self._current_target = f"group:{msg.group_openid}"
+            contact_id = msg.group_openid
         elif msg.is_channel:
             self._current_target = f"channel:{msg.channel_id}"
+            contact_id = msg.channel_id
+        else:
+            contact_id = None
+        
+        # 更新联系人信息
+        self._update_contact(msg)
+        
+        # 记录收到的消息
+        if contact_id:
+            attachment_paths = []
+            if msg.attachments:
+                for att in msg.attachments:
+                    if att.local_path:
+                        attachment_paths.append(att.local_path)
+            self._log_message(contact_id, "<<", msg.content or "", attachment_paths)
         
         # 格式化并输出
         formatted = await self.format_incoming_message(msg)
@@ -1655,6 +1794,10 @@ class StdioHandler:
     async def _test_mode_reply(self, msg: Message):
         """测试模式：回复相同内容"""
         try:
+            # 获取联系人ID
+            contact_id = msg.group_openid if msg.is_group else msg.author_id
+            sent_media = []
+            
             # 回复文本内容
             if msg.content:
                 await self.bot.reply(msg, msg.content)
@@ -1677,7 +1820,12 @@ class StdioHandler:
                         await self.bot.api.send_file(target_id, file_path=local_path, is_group=is_group)
                         print(f"[测试模式] 已回复文件", flush=True)
                     
+                    sent_media.append(local_path)
                     await asyncio.sleep(0.5)
+            
+            # 记录发送的消息
+            if contact_id:
+                self._log_message(contact_id, ">>", msg.content or "", sent_media)
                     
         except Exception as e:
             print(f"[测试模式回复失败] {e}", flush=True)
@@ -1748,6 +1896,12 @@ class StdioHandler:
             print("  /reply <内容>   - 回复最后收到的消息", flush=True)
             print("  直接输入内容    - 发送到当前目标", flush=True)
             print("  [文件名]        - 发送uploads目录中的文件", flush=True)
+            print("", flush=True)
+            print("自动发送:", flush=True)
+            print("  将文本文件放入uploads/目录，会自动发送给最近联系人", flush=True)
+            print("  文件内容可包含 [文件路径] 格式来发送媒体文件", flush=True)
+            print("", flush=True)
+            print(f"  最近联系人: {self._recent_target or '无'}", flush=True)
             
         else:
             # 当作消息发送
@@ -1789,12 +1943,82 @@ class StdioHandler:
         # 在后台运行stdin读取
         stdin_task = asyncio.create_task(self.stdin_reader())
         
+        # 启动uploads目录监控
+        upload_monitor_task = asyncio.create_task(self._monitor_uploads())
+        
         # 运行机器人（会阻塞）
         try:
             await self.bot.start()
         finally:
             self._running = False
             stdin_task.cancel()
+            upload_monitor_task.cancel()
+    
+    async def _monitor_uploads(self):
+        """监控uploads目录中的文本文件并发送给最近联系人"""
+        processed_files = set()  # 已处理的文件
+        text_exts = ['.txt', '.text', '.md']
+        
+        while self._running:
+            try:
+                await asyncio.sleep(2)  # 每2秒检查一次
+                
+                # 检查uploads目录（不含子目录）中的文本文件
+                if not os.path.exists(self.upload_dir):
+                    continue
+                
+                for filename in os.listdir(self.upload_dir):
+                    filepath = os.path.join(self.upload_dir, filename)
+                    
+                    # 跳过目录和已处理的文件
+                    if os.path.isdir(filepath):
+                        continue
+                    if filepath in processed_files:
+                        continue
+                    
+                    # 检查是否是文本文件
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext not in text_exts:
+                        continue
+                    
+                    # 有最近联系人时才处理
+                    if not self._recent_target:
+                        logger.debug(f"没有最近联系人，跳过文件: {filename}")
+                        continue
+                    
+                    # 标记为已处理
+                    processed_files.add(filepath)
+                    
+                    # 读取文件内容
+                    try:
+                        with open(filepath, "r", encoding="utf-8") as f:
+                            content = f.read().strip()
+                        
+                        if not content:
+                            continue
+                        
+                        print(f"\n[检测到文件] {filename}", flush=True)
+                        
+                        # 解析内容（可能包含文件路径）
+                        parsed = self.parse_outgoing_message(content)
+                        
+                        # 发送给最近联系人
+                        print(f"[发送给最近联系人] {self._recent_target}", flush=True)
+                        await self.send_message(
+                            self._recent_target,
+                            parsed["content"],
+                            parsed["media_files"]
+                        )
+                        
+                        print(f"[已发送] {filename}", flush=True)
+                        
+                    except Exception as e:
+                        logger.error(f"处理文件失败 {filename}: {e}")
+                        
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"监控uploads目录失败: {e}")
 
 
 # ============== 主程序入口 ==============
@@ -1806,7 +2030,7 @@ def main():
     """主程序入口"""
     # 默认配置（内置参数）
     DEFAULT_APP_ID = "APPID"
-    DEFAULT_CLIENT_SECRET = "SECRET"
+    DEFAULT_CLIENT_SECRET = "SECRETKEY"
     DOWNLOAD_DIR = "downloads"
     UPLOAD_DIR = "uploads"
     
