@@ -1,7 +1,7 @@
 # qqbot-python
 腾讯QQ的openclaw专用机器人协议的PYTHON实现，让机器人更自由吧
 
-### 本项目是从[qqbot|https://github.com/sliverp/qqbot]进行通讯协议转换而来，感谢sliverp提供的版本
+### 本项目是从[qqbot](https://github.com/sliverp/qqbot)进行通讯协议转换而来，感谢sliverp提供的版本
 
 
 ## QQBot Python 客户端
